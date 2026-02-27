@@ -1,0 +1,12 @@
+src/app/__pycache__
+src/app/core/__pycache__
+src/app/scripts/__pycache__
+.pytest_cache
+migrations/__pycache__
+migrations/versions/__pycache__
+__pycache__
+tests/__pycache__
+
+.venv
+
+uv.lock
