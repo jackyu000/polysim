@@ -20,7 +20,6 @@ from app.schemas.auth import RegisterIn, LoginIn, TokenOut, RefreshIn, MeOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-
 @router.post("/register", response_model=TokenOut)
 def register(payload: RegisterIn, request: Request, db: Session = Depends(get_db)):
     # Ensure email unique

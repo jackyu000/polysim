@@ -2,9 +2,11 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from app.core.db import SessionLocal
 from app.api.auth import router as auth_router
+from app.api.orders import router as orders_router
 
 app = FastAPI()
 app.include_router(auth_router)
+app.include_router(orders_router)
 
 @app.get("/")
 def root():
