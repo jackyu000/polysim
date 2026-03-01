@@ -150,12 +150,18 @@ def create_order(payload: OrderCreateIn, user=Depends(get_current_user), db: Ses
                         FROM orders
                         WHERE market_id = :mid AND outcome = :outcome
                           AND side = 'SELL' AND status IN ('OPEN','PARTIAL')
+                          AND user_id <> :taker_uid
                           AND price_micros <= :taker_price
                         ORDER BY price_micros ASC, created_at ASC
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                     """),
-                    {"mid": payload.market_id, "outcome": payload.outcome, "taker_price": payload.price_micros},
+                    {
+                        "mid": payload.market_id,
+                        "outcome": payload.outcome,
+                        "taker_price": payload.price_micros,
+                        "taker_uid": user["id"],
+                    },
                 ).mappings().first()
             else:  # SELL
                 maker = db.execute(
@@ -164,12 +170,18 @@ def create_order(payload: OrderCreateIn, user=Depends(get_current_user), db: Ses
                         FROM orders
                         WHERE market_id = :mid AND outcome = :outcome
                           AND side = 'BUY' AND status IN ('OPEN','PARTIAL')
+                          AND user_id <> :taker_uid
                           AND price_micros >= :taker_price
                         ORDER BY price_micros DESC, created_at ASC
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                     """),
-                    {"mid": payload.market_id, "outcome": payload.outcome, "taker_price": payload.price_micros},
+                    {
+                        "mid": payload.market_id,
+                        "outcome": payload.outcome,
+                        "taker_price": payload.price_micros,
+                        "taker_uid": user["id"],
+                    },
                 ).mappings().first()
 
             if not maker:
@@ -364,7 +376,8 @@ def cancel_order(order_id: str, user=Depends(get_current_user), db: Session = De
     # Lock the order row
     o = db.execute(
         text("""
-            SELECT id::text, user_id::text as user_id, side, price_micros, qty_remaining, status, reserved_cents
+            SELECT id::text as id, user_id::text as user_id, market_id::text as market_id,
+                   outcome, side, price_micros, qty_remaining, status, reserved_cents
             FROM orders
             WHERE id = :oid
             FOR UPDATE
@@ -379,10 +392,11 @@ def cancel_order(order_id: str, user=Depends(get_current_user), db: Session = De
     if o["status"] not in ("OPEN", "PARTIAL"):
         raise HTTPException(status_code=400, detail="order not cancelable")
 
-    # Release reserved funds for remaining qty (BUY-only here)
+    remaining = int(o["qty_remaining"])
+
+    # Release reserved for remaining
     if o["side"] == "BUY":
         release = int(o["reserved_cents"])
-
         db.execute(
             text("""
                 UPDATE accounts
@@ -392,6 +406,36 @@ def cancel_order(order_id: str, user=Depends(get_current_user), db: Session = De
             """),
             {"delta": release, "uid": user["id"]},
         )
+    else:
+        db.execute(
+            text("""
+                INSERT INTO positions (user_id, market_id, yes_shares, no_shares, yes_reserved, no_reserved, updated_at)
+                VALUES (:uid, :mid, 0, 0, 0, 0, now())
+                ON CONFLICT (user_id, market_id) DO NOTHING
+            """),
+            {"uid": user["id"], "mid": o["market_id"]},
+        )
+
+        if o["outcome"] == "YES":
+            db.execute(
+                text("""
+                    UPDATE positions
+                    SET yes_reserved = yes_reserved - :q,
+                        updated_at = now()
+                    WHERE user_id = :uid AND market_id = :mid
+                """),
+                {"q": remaining, "uid": user["id"], "mid": o["market_id"]},
+            )
+        else:
+            db.execute(
+                text("""
+                    UPDATE positions
+                    SET no_reserved = no_reserved - :q,
+                        updated_at = now()
+                    WHERE user_id = :uid AND market_id = :mid
+                """),
+                {"q": remaining, "uid": user["id"], "mid": o["market_id"]},
+            )
 
     # Mark canceled and zero remaining
     db.execute(
