@@ -19,10 +19,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    pass
+    # add column with a temporary default so existing rows can be updated
+    op.add_column(
+        "orders",
+        sa.Column("reserved_cents", sa.BigInteger(), nullable=False, server_default="0"),
+    )
+
+    # backfill existing BUY open/partial orders so it matches current reservation math
+    op.execute(sa.text("""
+        UPDATE orders
+        SET reserved_cents = ((price_micros * 100 + 500000) / 1000000) * qty_remaining
+        WHERE side = 'BUY' AND status IN ('OPEN','PARTIAL')
+    """))
+
+    # remove default going forward (we will always set it explicitly in code)
+    op.alter_column("orders", "reserved_cents", server_default=None)
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
-    pass
+    op.drop_column("orders", "reserved_cents")

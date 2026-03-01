@@ -64,8 +64,8 @@ def create_order(payload: OrderCreateIn, user=Depends(get_current_user), db: Ses
 
     db.execute(
         text("""
-            INSERT INTO orders (id, market_id, user_id, outcome, side, price_micros, qty, qty_remaining, status)
-            VALUES (:id, :mid, :uid, :outcome, :side, :price, :qty, :qty, 'OPEN')
+            INSERT INTO orders (id, market_id, user_id, outcome, side, price_micros, qty, qty_remaining, status, reserved_cents)
+            VALUES (:id, :mid, :uid, :outcome, :side, :price, :qty, :qty, 'OPEN', :reserved)
         """),
         {
             "id": order_id,
@@ -75,12 +75,13 @@ def create_order(payload: OrderCreateIn, user=Depends(get_current_user), db: Ses
             "side": payload.side,
             "price": payload.price_micros,
             "qty": payload.qty,
+            "reserved": cost_cents,
         },
     )
 
     row = db.execute(
         text("""
-            SELECT id::text, market_id::text, outcome, side, price_micros, qty, qty_remaining, status, created_at::text
+            SELECT id::text, market_id::text, outcome, side, price_micros, qty, reserved_cents, qty_remaining, status, created_at::text
             FROM orders
             WHERE id = :id
         """),
@@ -95,7 +96,7 @@ def cancel_order(order_id: str, user=Depends(get_current_user), db: Session = De
     # Lock the order row
     o = db.execute(
         text("""
-            SELECT id::text, user_id::text as user_id, side, price_micros, qty_remaining, status
+            SELECT id::text, user_id::text as user_id, side, price_micros, qty_remaining, status, reserved_cents
             FROM orders
             WHERE id = :oid
             FOR UPDATE
@@ -112,8 +113,7 @@ def cancel_order(order_id: str, user=Depends(get_current_user), db: Session = De
 
     # Release reserved funds for remaining qty (BUY-only here)
     if o["side"] == "BUY":
-        price_cents = price_micros_to_cents(int(o["price_micros"]))
-        release = price_cents * int(o["qty_remaining"])
+        release = int(o["reserved_cents"])
 
         db.execute(
             text("""
@@ -129,7 +129,7 @@ def cancel_order(order_id: str, user=Depends(get_current_user), db: Session = De
     db.execute(
         text("""
             UPDATE orders
-            SET status = 'CANCELED', qty_remaining = 0
+            SET status = 'CANCELED', qty_remaining = 0, reserved_cents = 0
             WHERE id = :oid
         """),
         {"oid": order_id},
@@ -183,3 +183,21 @@ def my_orders(user=Depends(get_current_user), db: Session = Depends(get_db)):
         {"uid": user["id"]},
     ).mappings().all()
     return {"orders": rows}
+
+@router.get("/me/balance")
+def my_balance(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.execute(
+        text("""
+            SELECT balance_cents, reserved_cents
+            FROM accounts
+            WHERE user_id = :uid
+        """),
+        {"uid": user["id"]},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=400, detail="account missing")
+    return {
+        "balance_cents": int(row["balance_cents"]),
+        "reserved_cents": int(row["reserved_cents"]),
+        "available_cents": int(row["balance_cents"] - row["reserved_cents"]),
+    }
