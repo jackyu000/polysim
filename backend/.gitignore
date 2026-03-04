@@ -1,12 +1,22 @@
-src/app/__pycache__
-src/app/core/__pycache__
-src/app/scripts/__pycache__
-.pytest_cache
-migrations/__pycache__
-migrations/versions/__pycache__
-__pycache__
-tests/__pycache__
+# Secrets and local env
+.env
+.env.*
+!.env.example
 
-.venv
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-uv.lock
+# Virtualenv and local tool caches
+.venv/
+.uv-cache/
+
+# Test/coverage artifacts
+.coverage
+htmlcov/
+
+# OS/editor noise
+.DS_Store

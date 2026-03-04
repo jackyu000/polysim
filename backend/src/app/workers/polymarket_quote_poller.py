@@ -9,6 +9,7 @@ import httpx
 from sqlalchemy import text
 
 from app.core.db import SessionLocal
+from app.services.polymarket_targets import get_quote_targets
 
 VENUE = "POLYMARKET"
 CLOB_BASE = "https://clob.polymarket.com"
@@ -92,16 +93,7 @@ def main():
 
         with SessionLocal() as db:
             try:
-                maps = db.execute(
-                    text(
-                        """
-                        SELECT market_id::text as market_id, yes_token_id, no_token_id
-                        FROM external_market_map
-                        WHERE venue = :v
-                        """
-                    ),
-                    {"v": VENUE},
-                ).mappings().all()
+                maps = get_quote_targets(db)
 
                 # token_id -> (market_id, outcome)
                 token_to_ref: dict[str, tuple[str, str]] = {}
@@ -118,7 +110,7 @@ def main():
 
                 batches = chunk(tokens, BATCH_SIZE)
                 print(
-                    f"[poller] mapped_markets={len(maps)} tokens={len(tokens)} "
+                    f"[poller] selected_markets={len(maps)} tokens={len(tokens)} "
                     f"batches={len(batches)}"
                 )
 

@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     container_name: polysim-db
     environment:
       POSTGRES_USER: postgres
@@ -15,6 +16,112 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+
+  api:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: &backend_env
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/polysim
+      PYTHONPATH: /app/src
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-admin@example.com}
+      POLY_MARKET_SYNC_SECONDS: ${POLY_MARKET_SYNC_SECONDS:-300}
+      POLY_QUOTE_MARKET_LIMIT: ${POLY_QUOTE_MARKET_LIMIT:-500}
+      POLY_POLL_SECONDS: ${POLY_POLL_SECONDS:-2.0}
+      POLY_BATCH_SIZE: ${POLY_BATCH_SIZE:-50}
+      BRIDGE_POLL_SECONDS: ${BRIDGE_POLL_SECONDS:-2.0}
+      BRIDGE_SPREAD_CENTS: ${BRIDGE_SPREAD_CENTS:-1}
+      BRIDGE_MAX_SPREAD_CENTS: ${BRIDGE_MAX_SPREAD_CENTS:-15}
+      BRIDGE_STALE_SECONDS: ${BRIDGE_STALE_SECONDS:-30}
+      BRIDGE_SIZE_QTY: ${BRIDGE_SIZE_QTY:-20}
+      BRIDGE_SEED_QTY: ${BRIDGE_SEED_QTY:-200}
+      BRIDGE_BOT_USER_ID: ${BRIDGE_BOT_USER_ID:-}
+      BRIDGE_BOT_EMAIL: ${BRIDGE_BOT_EMAIL:-}
+      BRIDGE_BOT_BALANCE_CENTS: ${BRIDGE_BOT_BALANCE_CENTS:-100000000}
+    command:
+      - /bin/sh
+      - -lc
+      - ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  polymarket-market-sync:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *backend_env
+    command:
+      - /bin/sh
+      - -lc
+      - ./.venv/bin/python -m app.workers.polymarket_market_sync_worker
+    restart: unless-stopped
+
+  polymarket-quote-poller:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *backend_env
+    command:
+      - /bin/sh
+      - -lc
+      - ./.venv/bin/python -m app.workers.polymarket_quote_poller
+    restart: unless-stopped
+
+  polymarket-bridge:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *backend_env
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        if [ -z "$BRIDGE_BOT_USER_ID" ]; then
+          echo "BRIDGE_BOT_USER_ID must be set"
+          exit 1
+        fi
+        ./.venv/bin/python -m app.workers.bridge_polymarket_mm
+    restart: unless-stopped
+
+  migrate:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *backend_env
+    command:
+      - /bin/sh
+      - -lc
+      - ./.venv/bin/alembic upgrade head
+    restart: "no"
 
 volumes:
   pgdata:

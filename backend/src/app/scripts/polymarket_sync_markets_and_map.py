@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -64,9 +64,10 @@ def extract_yes_no_token_ids(m: dict[str, Any]) -> tuple[str, str] | None:
 def main() -> None:
     # Paging + filtering knobs
     limit = int(os.getenv("POLY_SYNC_LIMIT", "200"))
-    max_pages = int(os.getenv("POLY_SYNC_MAX_PAGES", "50"))  # 50*200 = 10k max
+    max_pages = int(os.getenv("POLY_SYNC_MAX_PAGES", "1000"))
     active_only = os.getenv("POLY_SYNC_ACTIVE_ONLY", "true").lower() in ("1", "true", "yes")
     require_orderbook = os.getenv("POLY_SYNC_REQUIRE_ORDERBOOK", "true").lower() in ("1", "true", "yes")
+    sync_started_at = datetime.now(timezone.utc)
 
     params_base: dict[str, Any] = {"limit": limit, "offset": 0}
     if active_only:
@@ -75,11 +76,18 @@ def main() -> None:
 
     upserted_markets = 0
     upserted_maps = 0
+    scan_complete = True
 
     with httpx.Client(base_url=GAMMA_BASE, timeout=30.0) as client:
         with SessionLocal() as db:
             try:
-                for page in range(max_pages):
+                page = 0
+                while True:
+                    if page >= max_pages:
+                        scan_complete = False
+                        print(f"[sync] reached safety page limit max_pages={max_pages}")
+                        break
+
                     params = dict(params_base)
                     params["offset"] = page * limit
 
@@ -146,23 +154,51 @@ def main() -> None:
                             text(
                                 """
                                 INSERT INTO external_market_map (market_id, venue, yes_token_id, no_token_id, updated_at)
-                                VALUES (:mid, :venue, :yes, :no, now())
+                                VALUES (:mid, :venue, :yes, :no, :updated_at)
                                 ON CONFLICT (market_id, venue) DO UPDATE
                                 SET yes_token_id = EXCLUDED.yes_token_id,
                                     no_token_id  = EXCLUDED.no_token_id,
-                                    updated_at   = now()
+                                    updated_at   = EXCLUDED.updated_at
                                 """
                             ),
-                            {"mid": internal_market_id, "venue": VENUE, "yes": yes_id, "no": no_id},
+                            {
+                                "mid": internal_market_id,
+                                "venue": VENUE,
+                                "yes": yes_id,
+                                "no": no_id,
+                                "updated_at": sync_started_at,
+                            },
                         )
                         upserted_maps += 1
+                    page += 1
+
+                if scan_complete:
+                    db.execute(
+                        text(
+                            """
+                            UPDATE markets
+                            SET status = 'CLOSED'
+                            WHERE id IN (
+                                SELECT market_id
+                                FROM external_market_map
+                                WHERE venue = :venue
+                                  AND updated_at < :updated_at
+                            )
+                              AND status = 'OPEN'
+                            """
+                        ),
+                        {"venue": VENUE, "updated_at": sync_started_at},
+                    )
 
                 db.commit()
             except Exception:
                 db.rollback()
                 raise
 
-    print(f"✅ Sync done. markets upserted={upserted_markets}, maps upserted={upserted_maps}")
+    print(
+        f"✅ Sync done. markets upserted={upserted_markets}, "
+        f"maps upserted={upserted_maps}, complete={scan_complete}"
+    )
 
 
 if __name__ == "__main__":

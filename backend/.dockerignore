@@ -1,0 +1,11 @@
+.git
+.gitignore
+.pytest_cache
+.venv
+.uv-cache
+__pycache__
+tests
+.env
+.env.*
+!.env.example
+smoke.sh

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
@@ -38,3 +40,14 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="user not found")
 
     return row
+
+
+def require_admin_user(user=Depends(get_current_user)):
+    admin_emails = {
+        email.strip().lower()
+        for email in os.getenv("ADMIN_EMAILS", "").split(",")
+        if email.strip()
+    }
+    if user["email"].lower() not in admin_emails:
+        raise HTTPException(status_code=403, detail="admin access required")
+    return user
